@@ -1,10 +1,17 @@
-import pandas as pd
 import os
 from typing import Iterator, List, Tuple
+
+import pandas as pd
 from google.cloud import bigquery
+from google.oauth2 import service_account
 
 from bq_fetcher.utils import divide_in_chunks, scope_splitter, do_parallel
-from config import BQ_CLIENT, BQ_LOCATION
+
+CREDS_SCOPES = [
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/bigquery",
+    "https://www.googleapis.com/auth/devstorage.full_control"
+]
 
 class BigQueryTable:
     '''
@@ -31,12 +38,28 @@ class BigQueryTable:
 
 class BigQueryClient:
     '''
-    Wrapper of BigQuery Client object containing credentials
-    and jinja environment.
+    Wrapper of BigQuery Client object containing credentials.
+
+    Parameters:
+    ----------
+    service_account_filename: str
+        The path and file name of credentials file bq_service_account.json.
+        The path should be absolute.
     '''
-    def __init__(self) -> None:
-        self.client = BQ_CLIENT
-        self.location = BQ_LOCATION
+    def __init__(
+        self,
+        service_account_filename: str
+    ) -> None:
+        assert isinstance(service_account_filename, str)
+
+        credentials = service_account.Credentials.from_service_account_file(
+            service_account_filename, scopes=CREDS_SCOPES
+        )
+        bq_client = bigquery.Client(
+            credentials=credentials,
+            project=credentials.project_id
+        )
+        self._client = bq_client
 
     def run(
         self,
@@ -45,7 +68,7 @@ class BigQueryClient:
         """
         Run a SQL BigQuery request.
         """
-        job = self.client.query(request)
+        job = self._client.query(request)
         return job.result()
 
 class FetchingChunk:
@@ -78,9 +101,15 @@ class BigQueryFetcher:
             df = fetcher.fetch(chunk, nb_cores=-1)
             # compute df...
     '''
-    def __init__(self, bq_table: BigQueryTable,) -> None:
-        self._client = BigQueryClient()
+    def __init__(
+        self, 
+        service_account_filename: str,
+        bq_table: BigQueryTable,
+    ) -> None:
+        self._client = BigQueryClient(service_account_filename)
         self._bq_table = bq_table
+        self._service_account_filename = service_account_filename
+        self._creds_scopes = CREDS_SCOPES
 
     def chunks(
         self,
@@ -136,7 +165,8 @@ class BigQueryFetcher:
 
         if nb_cores == 1:
             return _get_train_table_as_df(
-                (self._bq_table, column, chunk.elements)
+                (self._service_account_filename, self._creds_scopes, \
+                    self._bq_table, column, chunk.elements)
             )
         if nb_cores == -1:
             nb_cores = os.cpu_count()
@@ -144,7 +174,8 @@ class BigQueryFetcher:
         # Division of the chunk in n small chunks, with n the number
         # of cores (`nb_cores`).
         chunks_per_core = divide_in_chunks(chunk.elements, nb_cores)
-        partition_list = [(self._bq_table, column, item) for item in chunks_per_core]
+        partition_list = [(self._service_account_filename, self._creds_scopes, \
+            self._bq_table, column, item) for item in chunks_per_core]
         return do_parallel(
             _get_train_table_as_df,
             nb_cores,
@@ -197,12 +228,14 @@ def _get_train_table_as_df(
         or only the rows matching the chunk if using chunk.
     '''
     from google.cloud.bigquery_storage import BigQueryReadClient, ReadSession, DataFormat
-    from config import CREDENTIALS
 
-    bq_table, column, chunk = pickled_parameters
+    service_account_filename, creds_scopes, bq_table, column, chunk = pickled_parameters
+
+    credentials = service_account.Credentials.from_service_account_file(
+        service_account_filename, scopes=creds_scopes
+    )
     var = bq_table.variables
-
-    bqstorageclient = BigQueryReadClient(credentials=CREDENTIALS)
+    bqstorageclient = BigQueryReadClient(credentials=credentials)
     stringify_table = f"projects/{var['PROJECT_ID']}/datasets/{var['DATASET']}/tables/{var['TABLE']}"
     parent = "projects/{}".format(var['PROJECT_ID'])
 
