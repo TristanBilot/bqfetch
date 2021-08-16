@@ -193,11 +193,11 @@ class BigQueryFetcher:
             'multiprocessing': do_parallel_multiprocessing,
         }
         parallel_function = parallel_backends[parallel_backend]
-        return parallel_function(
+        return pd.concat(parallel_function(
             _get_train_table_as_df,
             nb_cores,
             partition_list
-        )
+        ))
         
     def _extract_distinct_chunks(
         self,
