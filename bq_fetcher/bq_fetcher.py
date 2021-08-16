@@ -134,6 +134,7 @@ class BigQueryFetcher:
         chunk: FetchingChunk=None,
         nb_cores: int=1,
         parallel_backend: str='billiard',
+        partitioned_table_name: str='TMP_TABLE',
     ) -> pd.DataFrame:
         '''
         Fetch a `chunk` using BigQuery Storage API as a pandas Dataframe.
@@ -157,6 +158,12 @@ class BigQueryFetcher:
             >>> Choose 'joblib' to use the joblib backend.
             >>> Choose 'multiprocessing' to use the current version of Python
             multiprocessing lib.
+        partitioned_table_name: str
+            The name of the temporary table that will be created in the same dataset as the 
+            fetched `bq_table` at each call to fetch() in order to divide the whole table
+            in small chunked tables that can be fetched extremly fast.
+            This table will be deleted after each execution so no need to delete it manually
+            afterwards.
         
         Returns:
         -------
@@ -173,10 +180,12 @@ class BigQueryFetcher:
         if chunk is not None:
             assert column is not None
 
+        self._create_partitioned_table(chunk, partitioned_table_name)
+
         if nb_cores == 1:
-            return _get_train_table_as_df(
+            return _fetch_in_parallel(
                 (self._service_account_filename, self._creds_scopes, \
-                    self._bq_table, column, chunk.elements)
+                    partitioned_table_name, self._bq_table, column, chunk.elements)
             )
         if nb_cores == -1:
             nb_cores = os.cpu_count()
@@ -185,7 +194,7 @@ class BigQueryFetcher:
         # of cores (`nb_cores`).
         chunks_per_core = divide_in_chunks(chunk.elements, nb_cores)
         partition_list = [(self._service_account_filename, self._creds_scopes, \
-            self._bq_table, column, item) for item in chunks_per_core]
+            partitioned_table_name, self._bq_table, column, item) for item in chunks_per_core]
         
         parallel_backends = {
             'billiard': do_parallel_billiard,
@@ -193,16 +202,18 @@ class BigQueryFetcher:
             'multiprocessing': do_parallel_multiprocessing,
         }
         parallel_function = parallel_backends[parallel_backend]
-        return pd.concat(parallel_function(
-            _get_train_table_as_df,
+        df = pd.concat(parallel_function(
+            _fetch_in_parallel,
             nb_cores,
             partition_list
         ))
+        self._delete_partitioned_table(partitioned_table_name)
+        return df
         
     def _extract_distinct_chunks(
         self,
         table: BigQueryTable,
-        column: str
+        column: str,
     ) -> pd.DataFrame:
         '''
         Returns a Dataframe (with 1 col) of distinct elements on the 
@@ -210,15 +221,50 @@ class BigQueryFetcher:
         '''
 
         var = table.variables
-        request = f'''
+        query = f'''
             SELECT DISTINCT `{column}`
             FROM `{var["PROJECT_ID"]}.{var["DATASET"]}.{var["TABLE"]}`
         '''
-        query_results = self._client.run(request)
+        query_results = self._client.run(query)
         return query_results.to_dataframe()
+
+    def _create_partitioned_table(
+        self,
+        chunk: FetchingChunk,
+        partitioned_table_name: str,
+    ):
+        '''
+        Create a temporary table used to store one `chunk` of data,
+        extracted from the main table to fetch. This step is necessary
+        in order to improve performances and avoid network bottleneck.
+        The table is created with the name `partitioned_table_name` in the
+        same dataset as `bq_table`.
+        '''
+        sqlify_chunk_elements = ','.join(list(map(lambda x: f'"{x}"', chunk.elements)))
+        var = self._bq_table.variables
+        query = f'''
+            CREATE OR REPLACE TABLE
+            `{var["PROJECT_ID"]}.{var["DATASET"]}.{partitioned_table_name}` AS
+            SELECT 
+            * 
+            FROM `{var["PROJECT_ID"]}.{var["DATASET"]}.{var["TABLE"]}`
+            WHERE barcode IN ({sqlify_chunk_elements})
+        '''
+        self._client.run(query)
+
+    def _delete_partitioned_table(
+        self, 
+        partitioned_table_name: str,
+    ):
+        '''
+        Delete the temporary table used to chunk the table.
+        '''
+        var = self._bq_table.variables
+        table = f'{var["PROJECT_ID"]}.{var["DATASET"]}.{partitioned_table_name}'
+        self._client.delete_table(table)
         
 
-def _get_train_table_as_df(
+def _fetch_in_parallel(
     pickled_parameters: Tuple[BigQueryTable, str, List[str]],
 ) -> pd.DataFrame:
     '''
@@ -246,14 +292,14 @@ def _get_train_table_as_df(
     '''
     from google.cloud.bigquery_storage import BigQueryReadClient, ReadSession, DataFormat
 
-    service_account_filename, creds_scopes, bq_table, column, chunk = pickled_parameters
+    service_account_filename, creds_scopes, partitioned_table_name, bq_table, column, chunk = pickled_parameters
 
     credentials = service_account.Credentials.from_service_account_file(
         service_account_filename, scopes=creds_scopes
     )
     var = bq_table.variables
     bqstorageclient = BigQueryReadClient(credentials=credentials)
-    stringify_table = f"projects/{var['PROJECT_ID']}/datasets/{var['DATASET']}/tables/{var['TABLE']}"
+    stringify_table = f"projects/{var['PROJECT_ID']}/datasets/{var['DATASET']}/tables/{partitioned_table_name}"
     parent = "projects/{}".format(var['PROJECT_ID'])
 
     requested_session = None

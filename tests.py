@@ -1,4 +1,5 @@
 import sys
+from time import time
 sys.path.append('/Users/tristanbilot/Desktop/bq_data_fetcher')
 
 from bq_fetcher.bq_fetcher import BigQueryFetcher, BigQueryTable
@@ -16,5 +17,8 @@ if __name__ == '__main__':
     )
     
     for chunk in chunks:
-        df = fetcher.fetch(chunk=chunk, nb_cores=5, parallel_backend='billiard')
-        print(df)
+        start = time()
+        df = fetcher.fetch(chunk=chunk, nb_cores=1, parallel_backend='billiard')
+        end = time() - start
+        print(f'Fetching of len {len(df)} in {end}s')
+        
