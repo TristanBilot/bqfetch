@@ -265,30 +265,15 @@ class BigQueryFetcher:
         
 
 def _fetch_in_parallel(
-    pickled_parameters: Tuple[BigQueryTable, str, List[str]],
+    pickled_parameters: Tuple,
 ) -> pd.DataFrame:
     '''
     Fetch a BigQuery table using Storage API.
-    If `chunk` are given, the fetching will return only
+    If `chunk` is given, the fetching will return only
     the chunk matching the given list, based on the `column`.
     Warning: imports should not be removed from the inner function
     because dependencies could not be found outside when running
     in child processes.
-
-    Parameters:
-    ----------
-    bq_table: BigQueryTable
-        Table to query.
-    column: str
-        Column name used as an index to select only chunk from this column.
-    chunk: List[str]
-        List of elements to select in the query using a IN sql statement.
-
-    Returns:
-    -------
-    pd.DataFrame
-        A dataframe containing the whole table if not chunk are selected,
-        or only the rows matching the chunk if using chunk.
     '''
     from google.cloud.bigquery_storage import BigQueryReadClient, ReadSession, DataFormat
 
