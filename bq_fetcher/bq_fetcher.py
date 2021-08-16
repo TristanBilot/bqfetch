@@ -1,0 +1,230 @@
+import pandas as pd
+import os
+from typing import Iterator, List, Tuple
+from google.cloud import bigquery
+
+from bq_fetcher.utils import divide_in_chunks, scope_splitter, do_parallel
+from config import BQ_CLIENT, BQ_LOCATION
+
+class BigQueryTable:
+    '''
+    A simple object containing the path to the requested table.
+    `project_id` is the name of the BigQuery project, `dataset`
+    the BigQuery dataset entry and `table` the name of the 
+    requested table.
+    '''
+    def __init__(
+        self,
+        project_id: str,
+        dataset: str,
+        table: str,
+    ) -> None:
+        self._variables = {
+            "PROJECT_ID": project_id,
+            "DATASET": dataset,
+            "TABLE": table,
+        }
+
+    @property
+    def variables(self):
+        return self._variables 
+
+class BigQueryClient:
+    '''
+    Wrapper of BigQuery Client object containing credentials
+    and jinja environment.
+    '''
+    def __init__(self) -> None:
+        self.client = BQ_CLIENT
+        self.location = BQ_LOCATION
+
+    def run(
+        self,
+        request: str
+    ) -> bigquery.table.RowIterator:
+        """
+        Run a SQL BigQuery request.
+        """
+        job = self.client.query(request)
+        return job.result()
+
+class FetchingChunk:
+    '''
+    Wrapper object used to store the elements to select in the 
+    given column.
+    '''
+    def __init__(self, elements: List[str], column: str,) -> None:
+        self.elements = elements
+        self.column = column
+
+class BigQueryFetcher:
+    '''
+    An object used to fetch BigQuery tables easily and progressively
+    in order to handle huge tables that does not fit into memory.
+    The fetcher divides the table in chunks of size `chunk_size`
+    based on the `column` parameter. Then each chunk is fetched 
+    using BigQuery Storage API, sequencially or in parallel using
+    child processes running on multiple cores.
+
+    Ex: Fetch a huge table of users: first, all the 'user_id' are 
+    fetched and divided in chunks of size 50000 (should fit into memory).
+    Then, we fetch each small chunk separately using multiprocessing
+    with the number of cores available of the machine.
+
+    >>> table = BigQueryTable("my_project", "dataset1", "users_table")
+    >>> fetcher = BigQueryFetcher(table)
+    >>> chunks = fetcher.chunks('user_id', 50000)
+    >>> for chunk in chunks:
+            df = fetcher.fetch(chunk, nb_cores=-1)
+            # compute df...
+    '''
+    def __init__(self, bq_table: BigQueryTable,) -> None:
+        self._client = BigQueryClient()
+        self._bq_table = bq_table
+
+    def chunks(
+        self,
+        column: str,
+        chunk_size: int,
+    ) -> Iterator:
+        '''
+        Returns a generator on which iterate to get chunks of `column` items of size
+        `chunk_size`. This allows to fetch the whole table by multiple chunks
+        that can handle in memory.
+        '''
+        indexes = self._extract_distinct_chunks(self._bq_table, column)
+        chunks = scope_splitter(indexes, chunk_size)
+        chunks = [FetchingChunk(x[column].tolist(), column) for x in chunks]
+        print(chunks)
+
+        for chunk in chunks:
+            yield chunk
+
+    def fetch(
+        self,
+        chunk: FetchingChunk=None,
+        nb_cores: int=1,
+    ) -> pd.DataFrame:
+        '''
+        Fetch a `chunk` using BigQuery Storage API as a pandas Dataframe.
+        The `chunk` can be given using the `chunks()` method.
+
+        Parameters:
+        ----------
+        chunk: FetchingChunk
+            A selection of rows that we want to fetch
+        nb_cores: int
+            The number of processes to create. By default, each process
+            will run on a separate core. It is not recommanded to set `nb_cores`
+            to a value larger than the number of vCPUs on the machine.
+            Setting this parameter to `-1` will use the number of vCPUs on
+            the machine.
+        
+        Returns:
+        -------
+        pd.DataFrame
+            A Dataframe containing all the data fetched from the chunk.
+        '''
+        assert nb_cores == -1 or nb_cores > 0
+        assert isinstance(chunk, FetchingChunk)
+
+        column = chunk.column
+        if column is not None:
+            assert chunk is not None
+        if chunk is not None:
+            assert column is not None
+
+        if nb_cores == 1:
+            return _get_train_table_as_df(
+                (self._bq_table, column, chunk.elements)
+            )
+        if nb_cores == -1:
+            nb_cores = os.cpu_count()
+
+        # Division of the chunk in n small chunks, with n the number
+        # of cores (`nb_cores`).
+        chunks_per_core = divide_in_chunks(chunk.elements, nb_cores)
+        partition_list = [(self._bq_table, column, item) for item in chunks_per_core]
+        return do_parallel(
+            _get_train_table_as_df,
+            nb_cores,
+            partition_list
+        )
+        
+    def _extract_distinct_chunks(
+        self,
+        table: BigQueryTable,
+        column: str
+    ) -> pd.DataFrame:
+        '''
+        Returns a Dataframe (with 1 col) of distinct elements on the 
+        `column` of the `table`.
+        '''
+
+        var = table.variables
+        request = f'''
+            SELECT DISTINCT `{column}`
+            FROM `{var["PROJECT_ID"]}.{var["DATASET"]}.{var["TABLE"]}`
+        '''
+        query_results = self._client.run(request)
+        return query_results.to_dataframe()
+        
+
+def _get_train_table_as_df(
+    pickled_parameters: Tuple[BigQueryTable, str, List[str]],
+) -> pd.DataFrame:
+    '''
+    Fetch a BigQuery table using Storage API.
+    If `chunk` are given, the fetching will return only
+    the chunk matching the given list, based on the `column`.
+    Warning: imports should not be removed from the inner function
+    because dependencies could not be found outside when running
+    in child processes.
+
+    Parameters:
+    ----------
+    bq_table: BigQueryTable
+        Table to query.
+    column: str
+        Column name used as an index to select only chunk from this column.
+    chunk: List[str]
+        List of elements to select in the query using a IN sql statement.
+
+    Returns:
+    -------
+    pd.DataFrame
+        A dataframe containing the whole table if not chunk are selected,
+        or only the rows matching the chunk if using chunk.
+    '''
+    from google.cloud.bigquery_storage import BigQueryReadClient, ReadSession, DataFormat
+    from config import CREDENTIALS
+
+    bq_table, column, chunk = pickled_parameters
+    var = bq_table.variables
+
+    bqstorageclient = BigQueryReadClient(credentials=CREDENTIALS)
+    stringify_table = f"projects/{var['PROJECT_ID']}/datasets/{var['DATASET']}/tables/{var['TABLE']}"
+    parent = "projects/{}".format(var['PROJECT_ID'])
+
+    requested_session = None
+    if chunk is not None:
+        sqlify_indexes = ','.join(list(map(lambda x: f'"{x}"', chunk)))
+        row_filter = ReadSession.TableReadOptions(row_restriction=f'{column} IN ({sqlify_indexes})')
+        requested_session = ReadSession(
+            table=stringify_table,
+            data_format=DataFormat.ARROW,
+            read_options=row_filter,
+        )
+    else:
+        requested_session = ReadSession(
+            table=stringify_table,
+            data_format=DataFormat.ARROW,
+        )
+    
+    session = bqstorageclient.create_read_session(
+        parent=parent,
+        read_session=requested_session, 
+        max_stream_count=1,
+    )
+    reader = bqstorageclient.read_rows(session.streams[0].name, timeout=10000)
+    return reader.to_dataframe(session)
