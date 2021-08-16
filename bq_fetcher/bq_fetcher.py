@@ -5,7 +5,7 @@ import pandas as pd
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
-from bq_fetcher.utils import divide_in_chunks, scope_splitter, do_parallel
+from bq_fetcher.utils import *
 
 CREDS_SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -133,6 +133,7 @@ class BigQueryFetcher:
         self,
         chunk: FetchingChunk=None,
         nb_cores: int=1,
+        parallel_backend: str='billiard',
     ) -> pd.DataFrame:
         '''
         Fetch a `chunk` using BigQuery Storage API as a pandas Dataframe.
@@ -148,6 +149,14 @@ class BigQueryFetcher:
             to a value larger than the number of vCPUs on the machine.
             Setting this parameter to `-1` will use the number of vCPUs on
             the machine.
+        parallel_backend: str
+            The framework used to parallelize the fetching.
+            >>> Choose 'billiard' to use an old fork of the Python multiprocessing lib
+            which allows to use multiprocessing from a process launched as daemon
+            (ex: Airflow).
+            >>> Choose 'joblib' to use the joblib backend.
+            >>> Choose 'multiprocessing' to use the current version of Python
+            multiprocessing lib.
         
         Returns:
         -------
@@ -156,6 +165,7 @@ class BigQueryFetcher:
         '''
         assert nb_cores == -1 or nb_cores > 0
         assert isinstance(chunk, FetchingChunk)
+        assert parallel_backend in ['billiard', 'joblib', 'multiprocessing']
 
         column = chunk.column
         if column is not None:
@@ -176,7 +186,14 @@ class BigQueryFetcher:
         chunks_per_core = divide_in_chunks(chunk.elements, nb_cores)
         partition_list = [(self._service_account_filename, self._creds_scopes, \
             self._bq_table, column, item) for item in chunks_per_core]
-        return do_parallel(
+        
+        parallel_backends = {
+            'billiard': do_parallel_billiard,
+            'joblib': do_parallel_joblib,
+            'multiprocessing': do_parallel_multiprocessing,
+        }
+        parallel_function = parallel_backends[parallel_backend]
+        return parallel_function(
             _get_train_table_as_df,
             nb_cores,
             partition_list

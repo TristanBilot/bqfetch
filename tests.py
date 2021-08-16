@@ -16,5 +16,5 @@ if __name__ == '__main__':
     )
     
     for chunk in chunks:
-        df = fetcher.fetch(chunk=chunk, nb_cores=1)
+        df = fetcher.fetch(chunk=chunk, nb_cores=1, parallel_backend='billiard')
         print(df)
