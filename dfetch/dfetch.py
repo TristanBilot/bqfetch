@@ -225,23 +225,22 @@ class BigQueryFetcher:
     def chunks(
         self,
         column: str,
-        chunk_size: int,
+        nb_chunks: int,
         verbose: bool=False,
     ) -> Iterator:
         '''
-        Returns a generator on which iterate to get chunks of `column` items of size
-        `chunk_size`. This allows to fetch the whole table by multiple chunks
-        that can handle in memory.
+        Returns a list on which iterate to get `nb_chunks` chunks of `column` items.
+        It allows to fetch the whole table with multiple chunks that can handle in memory.
         '''
         indexes = self._client.get_column_values(self._bq_table, column)
-        chunks = divide_in_chunks(indexes, chunk_size)
+        chunks = divide_in_chunks(indexes, nb_chunks)
         chunks = [FetchingChunk(x[column].tolist(), column) for x in chunks]
 
         if verbose:
             log(
                 'Chunking',
-                f'Nb values in {column}:\t {len(indexes)}',
-                f'Chunk size:\t\t\t {ft(chunk_size)}',
+                f'Nb values in "{column}":\t {len(indexes)}',
+                f'Chunk size:\t\t\t {ft(nb_chunks)}',
                 f'Nb chunks:\t\t\t {len(chunks)}')
         return chunks
 

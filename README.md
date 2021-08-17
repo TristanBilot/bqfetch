@@ -1,4 +1,4 @@
-<p align="center"><img width="15%" src="readme/logo.svg"/></p>
+<p align="center"><img width="15%" src=".github/logo.svg"/></p>
 
 <p align="center">
   <a href=""><img src="https://img.shields.io/github/last-commit/tristanbilot/dfetch" alt="Last commit"></a>
