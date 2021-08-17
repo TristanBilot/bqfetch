@@ -38,6 +38,15 @@ class BigQueryTable:
     def variables(self):
         return self._variables 
 
+class FetchingChunk:
+    '''
+    Wrapper object used to store the elements to select in the 
+    given column.
+    '''
+    def __init__(self, elements: List[str], column: str,) -> None:
+        self.elements = elements
+        self.column = column
+
 class BigQueryClient:
     '''
     Wrapper of BigQuery Client object containing credentials.
@@ -50,7 +59,7 @@ class BigQueryClient:
     '''
     def __init__(
         self,
-        service_account_filename: str
+        service_account_filename: str,
     ) -> None:
         assert isinstance(service_account_filename, str)
 
@@ -83,14 +92,95 @@ class BigQueryClient:
         '''
         self._client.delete_table(table_name, not_found_ok=not_found_ok)
 
-class FetchingChunk:
-    '''
-    Wrapper object used to store the elements to select in the 
-    given column.
-    '''
-    def __init__(self, elements: List[str], column: str,) -> None:
-        self.elements = elements
-        self.column = column
+    def get_nb_occurences_for_column(
+        self,
+        table: BigQueryTable,
+        column: str,
+    ) -> List[int]:
+        '''
+        For each distinct element in `column`, counts the number of occurences
+        and returns a list containing all the countings.
+        Ex: For a column name contaning: John, John, Louis
+        >>> [2, 1]
+        '''
+        var = table.variables
+        nb_occurences_query = f'''
+            SELECT COUNT(*)
+            FROM `{var["PROJECT_ID"]}.{var["DATASET"]}.{var["TABLE"]}`
+            GROUP BY {column}
+        '''
+        nb_occurences = [nb_occurences[0] for nb_occurences in self.run(nb_occurences_query)]
+        return nb_occurences
+
+    def get_table_size_in_GB(
+        self,
+        table: BigQueryTable,
+    ) -> int:
+        '''
+        Returns the size in GB of `table`.
+        '''
+        var = table.variables
+        size_of_table_query = f'''
+            SELECT SUM(size_bytes)/{1024**3} AS size_GB
+            FROM {var["PROJECT_ID"]}.{var["DATASET"]}.__TABLES__
+            WHERE table_id = '{var["TABLE"]}'
+        '''
+        size_of_table_in_GB = next(self.run(size_of_table_query).__iter__())[0]
+        return size_of_table_in_GB
+
+    def get_column_values(
+        self,
+        table: BigQueryTable,
+        column: str,
+    ) -> pd.DataFrame:
+        '''
+        Returns a Dataframe (with 1 col) of distinct elements on the 
+        `column` of the `table`.
+        '''
+        var = table.variables
+        query = f'''
+            SELECT DISTINCT `{column}`
+            FROM `{var["PROJECT_ID"]}.{var["DATASET"]}.{var["TABLE"]}`
+        '''
+        query_results = self.run(query)
+        return query_results.to_dataframe()
+
+    def create_partitioned_table(
+        self,
+        table: BigQueryTable,
+        chunk: FetchingChunk,
+        partitioned_table_name: str,
+    ):
+        '''
+        Create a temporary table used to store one `chunk` of data,
+        extracted from the main table to fetch. This step is necessary
+        in order to improve performances and avoid network bottleneck.
+        The table is created with the name `partitioned_table_name` in the
+        same dataset as `bq_table`.
+        '''
+        sqlify_chunk_elements = ','.join(list(map(lambda x: f'"{x}"', chunk.elements)))
+        var = table.variables
+        query = f'''
+            CREATE OR REPLACE TABLE
+            `{var["PROJECT_ID"]}.{var["DATASET"]}.{partitioned_table_name}` AS
+            SELECT 
+            * 
+            FROM `{var["PROJECT_ID"]}.{var["DATASET"]}.{var["TABLE"]}`
+            WHERE {chunk.column} IN ({sqlify_chunk_elements})
+        '''
+        self.run(query)
+
+    def delete_partitioned_table(
+        self,
+        table: BigQueryTable,
+        partitioned_table_name: str,
+    ):
+        '''
+        Delete the temporary table used to chunk the table.
+        '''
+        var = table.variables
+        table = f'{var["PROJECT_ID"]}.{var["DATASET"]}.{partitioned_table_name}'
+        self.delete_table(table)
 
 class InvalidChunkRangeException(Exception):
     pass
@@ -125,6 +215,7 @@ class BigQueryFetcher:
         self._bq_table = bq_table
         self._service_account_filename = service_account_filename
         self._creds_scopes = CREDS_SCOPES
+        self._cache = {}
 
     def chunks(
         self,
@@ -136,7 +227,7 @@ class BigQueryFetcher:
         `chunk_size`. This allows to fetch the whole table by multiple chunks
         that can handle in memory.
         '''
-        indexes = self._extract_distinct_chunks(column)
+        indexes = self._client.get_column_values(self._bq_table, column)
         chunks = divide_in_chunks(indexes, chunk_size)
         chunks = [FetchingChunk(x[column].tolist(), column) for x in chunks]
         print(chunks)
@@ -199,15 +290,15 @@ class BigQueryFetcher:
         if nb_cores > vcpu_count:
             print(f'Warning: `nb_cores` ({nb_cores}) greater than cpus on machine ({vcpu_count})')
 
-        optimized_chunks = self.divide_chunk_from_memory(chunk)
+        optimized_chunks = self._divide_chunk_from_memory(chunk)
         if nb_cores == 1:
             partitioned_table_name = f'{partitioned_table_name}0'
-            self._create_partitioned_table(chunk, partitioned_table_name)
+            self._client.create_partitioned_table(self._bq_table, chunk, partitioned_table_name)
             df = _fetch_in_parallel(
                 (self._service_account_filename, self._creds_scopes, \
                     partitioned_table_name, self._bq_table, column, chunk.elements)
             )
-            self._delete_partitioned_table(partitioned_table_name)
+            self._client.delete_partitioned_table(self._bq_table, partitioned_table_name)
             return df
 
         if nb_cores == -1:
@@ -215,7 +306,7 @@ class BigQueryFetcher:
 
         for i, small_chunk in enumerate(optimized_chunks):
             small_chunk = FetchingChunk(small_chunk, chunk.column)
-            self._create_partitioned_table(small_chunk, f'{partitioned_table_name}{i}')
+            self._client.create_partitioned_table(self._bq_table, small_chunk, f'{partitioned_table_name}{i}')
 
         partition_list = [(self._service_account_filename, self._creds_scopes, \
             f'{partitioned_table_name}{i}', self._bq_table, column, item) for i, item in enumerate(optimized_chunks)]
@@ -232,7 +323,7 @@ class BigQueryFetcher:
             partition_list
         ))
         for i in range(len(optimized_chunks)):
-            self._delete_partitioned_table(f'{partitioned_table_name}{i}')
+            self._client.delete_partitioned_table(self._bq_table, f'{partitioned_table_name}{i}')
         return df
 
     def get_chunk_size_approximation(
@@ -261,13 +352,7 @@ class BigQueryFetcher:
         chunk_size: int
             The size of one chunk, used later to fetch the table.
         '''
-        var = self._bq_table.variables
-        nb_occurences_query = f'''
-            SELECT COUNT(*)
-            FROM `{var["PROJECT_ID"]}.{var["DATASET"]}.{var["TABLE"]}`
-            GROUP BY {column}
-        '''
-        nb_occurences = [nb_occurences[0] for nb_occurences in self._client.run(nb_occurences_query)]
+        nb_occurences = self._client.get_nb_occurences_for_column(self._bq_table, column)
         mean = sum(nb_occurences) / len(nb_occurences)
         coeff = 0.25
         nb_dispersed_values = sum(not (mean * (1 - coeff) < count < mean * (1 + coeff)) \
@@ -278,79 +363,36 @@ class BigQueryFetcher:
             raise InvalidChunkRangeException(f'''Difference of range between elements of column {column} \
                 is too high: more than {coeff * 100}% of elements are too far from the mean.''')
 
-        free_memory_in_GB = (psutil.virtual_memory()[1] - nb_GB_to_save) / 1024**3
-        size_of_table_query = f'''
-            SELECT SUM(size_bytes)/{1024**3} AS size_GB
-            FROM {var["PROJECT_ID"]}.{var["DATASET"]}.__TABLES__
-            WHERE table_id = '{var["TABLE"]}'
-        '''
-        size_of_table_in_GB = next(self._client.run(size_of_table_query).__iter__())[0]
-        chunk_size = math.ceil(size_of_table_in_GB / free_memory_in_GB)
-
-        self._size_per_chunk_in_GB = math.ceil(size_of_table_in_GB / chunk_size) # à modifier plus tard
+        chunk_size, size_of_table_in_GB = self._chunk_size_approximation_formula(nb_GB_to_save)
+        self._cache['size_per_chunk_in_GB'] = math.ceil(size_of_table_in_GB / chunk_size)
         return chunk_size
 
-    def divide_chunk_from_memory(
+    def _divide_chunk_from_memory(
         self,
         chunk: FetchingChunk,
         nb_GB_to_save: int = 1,
     ) -> Iterable:
-        free_size = min(self._size_per_chunk_in_GB, (psutil.virtual_memory()[1] - nb_GB_to_save) / 1024**3)
+        if 'size_per_chunk_in_GB' not in self._cache:
+            chunk_size, size_of_table_in_GB = self._chunk_size_approximation_formula(nb_GB_to_save)
+            self._cache['size_per_chunk_in_GB'] = math.ceil(size_of_table_in_GB / chunk_size)
+
+        free_size = min(self._cache['size_per_chunk_in_GB'], (psutil.virtual_memory()[1] - nb_GB_to_save) / 1024**3)
         best_performance_table_size_in_GB = 2
         nb_chunks = math.ceil(free_size / best_performance_table_size_in_GB)
         return divide_in_chunks(chunk.elements, nb_chunks)
-        
-    def _extract_distinct_chunks(
-        self,
-        column: str,
-    ) -> pd.DataFrame:
-        '''
-        Returns a Dataframe (with 1 col) of distinct elements on the 
-        `column` of the `table`.
-        '''
 
-        var = self._bq_table.variables
-        query = f'''
-            SELECT DISTINCT `{column}`
-            FROM `{var["PROJECT_ID"]}.{var["DATASET"]}.{var["TABLE"]}`
-        '''
-        query_results = self._client.run(query)
-        return query_results.to_dataframe()
-
-    def _create_partitioned_table(
+    def _chunk_size_approximation_formula(
         self,
-        chunk: FetchingChunk,
-        partitioned_table_name: str,
+        nb_GB_to_save: int,
     ):
         '''
-        Create a temporary table used to store one `chunk` of data,
-        extracted from the main table to fetch. This step is necessary
-        in order to improve performances and avoid network bottleneck.
-        The table is created with the name `partitioned_table_name` in the
-        same dataset as `bq_table`.
+        Returns an estimated chunk_size in the case the number of occurences are correctly 
+        dispersed. Returns also the size of the table for cache and performance reasons.
         '''
-        sqlify_chunk_elements = ','.join(list(map(lambda x: f'"{x}"', chunk.elements)))
-        var = self._bq_table.variables
-        query = f'''
-            CREATE OR REPLACE TABLE
-            `{var["PROJECT_ID"]}.{var["DATASET"]}.{partitioned_table_name}` AS
-            SELECT 
-            * 
-            FROM `{var["PROJECT_ID"]}.{var["DATASET"]}.{var["TABLE"]}`
-            WHERE {chunk.column} IN ({sqlify_chunk_elements})
-        '''
-        self._client.run(query)
-
-    def _delete_partitioned_table(
-        self, 
-        partitioned_table_name: str,
-    ):
-        '''
-        Delete the temporary table used to chunk the table.
-        '''
-        var = self._bq_table.variables
-        table = f'{var["PROJECT_ID"]}.{var["DATASET"]}.{partitioned_table_name}'
-        self._client.delete_table(table)
+        size_of_table_in_GB = self._client.get_table_size_in_GB(self._bq_table)
+        free_memory_in_GB = (psutil.virtual_memory()[1] - nb_GB_to_save) / 1024**3
+        chunk_size = math.ceil(size_of_table_in_GB / free_memory_in_GB)
+        return chunk_size, size_of_table_in_GB
         
 
 def _fetch_in_parallel(
@@ -363,6 +405,7 @@ def _fetch_in_parallel(
     Warning: imports should not be removed from the inner function
     because dependencies could not be found outside when running
     in child processes.
+    Function should be global, not inside a class.
     '''
     from google.cloud.bigquery_storage import BigQueryReadClient, ReadSession, DataFormat
 
