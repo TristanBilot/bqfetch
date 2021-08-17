@@ -14,17 +14,14 @@ if __name__ == '__main__':
         '/Users/tristanbilot/Desktop/bigquery-fast-fetcher/secrets/bq_service_account.json',
         table
     )
-    perfect_nb_chunks = fetcher.get_chunk_size_approximation('barcode')
-    print(f'nb chunks: {perfect_nb_chunks}')
+    perfect_nb_chunks = fetcher.get_chunk_size_approximation('barcode', verbose=True)
     
     chunks = fetcher.chunks(
         column='barcode',
-        chunk_size=perfect_nb_chunks
+        chunk_size=perfect_nb_chunks,
+        verbose=True
     )
     
     for chunk in chunks:
-        start = time()
-        df = fetcher.fetch(chunk=chunk, nb_cores=2, parallel_backend='billiard')
-        end = time() - start
-        print(f'Fetching of len {len(df)} in {end}s')
+        df = fetcher.fetch(chunk=chunk, nb_cores=1, parallel_backend='billiard', verbose=True)
         

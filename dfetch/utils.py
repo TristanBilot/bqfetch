@@ -60,3 +60,14 @@ def do_parallel_multiprocessing(function, num_cores, partition_list):
     '''
     pool = multiprocessing.Pool(processes=num_cores)
     return pool.map(function, partition_list)
+
+def log(*args):
+    print()
+    for arg in args:
+        print(f'>>> {arg}')
+
+def ft(size_in_GB: int) -> str:
+    '''
+    Formats gigabytes like 2.3892... = 2.38GB
+    '''
+    return f'{round(size_in_GB, 2)}GB'
