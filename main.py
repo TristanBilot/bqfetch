@@ -2,7 +2,7 @@ import sys
 from time import time
 sys.path.append('/Users/tristanbilot/Desktop/bq_data_fetcher')
 
-from bq_fetcher.bq_fetcher import BigQueryFetcher, BigQueryTable
+from dfetch.dfetch import BigQueryFetcher, BigQueryTable
 
 if __name__ == '__main__':
     table = BigQueryTable(

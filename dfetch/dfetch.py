@@ -7,7 +7,7 @@ import pandas as pd
 from google.cloud import bigquery
 from google.oauth2 import service_account
 
-from bq_fetcher.utils import *
+from dfetch.utils import *
 
 CREDS_SCOPES = [
     "https://www.googleapis.com/auth/drive",
