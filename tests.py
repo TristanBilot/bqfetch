@@ -10,15 +10,21 @@ if __name__ == '__main__':
         "TRISTAN_EXPLO",
         "2GB"
     )
-    fetcher = BigQueryFetcher('/Users/tristanbilot/Desktop/bigquery-fast-fetcher/secrets/bq_service_account.json', table)
+    fetcher = BigQueryFetcher(
+        '/Users/tristanbilot/Desktop/bigquery-fast-fetcher/secrets/bq_service_account.json',
+        table
+    )
+    perfect_nb_chunks = fetcher.get_chunk_size_approximation('barcode')
+    print(f'nb chunks: {perfect_nb_chunks}')
+    
     chunks = fetcher.chunks(
         column='barcode',
-        chunk_size=20
+        chunk_size=perfect_nb_chunks
     )
     
     for chunk in chunks:
         start = time()
-        df = fetcher.fetch(chunk=chunk, nb_cores=1, parallel_backend='billiard')
+        df = fetcher.fetch(chunk=chunk, nb_cores=4, parallel_backend='billiard')
         end = time() - start
         print(f'Fetching of len {len(df)} in {end}s')
         
