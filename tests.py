@@ -24,7 +24,7 @@ if __name__ == '__main__':
     
     for chunk in chunks:
         start = time()
-        df = fetcher.fetch(chunk=chunk, nb_cores=-1, parallel_backend='billiard')
+        df = fetcher.fetch(chunk=chunk, nb_cores=2, parallel_backend='billiard')
         end = time() - start
         print(f'Fetching of len {len(df)} in {end}s')
         
