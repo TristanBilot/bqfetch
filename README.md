@@ -115,3 +115,11 @@ This column can contains a lot of variance between values so the chunking will n
 
 ### More cores != faster
 I remind you that adding more cores to the fetching process will not necessarily gain performance and most of the time it will even be slower. The reason is that the fetching is directly dependent on the Internet bandwidth available on your network, not the number of working cores or the computer power. However, you can do your own tests and in some cases the multiprocessing can gain time (ex: in the case where cloud machines allow only an amount of bandwidth by core, multiplying the number of cores will also multiplying the bandwidth, ex: GCP compute engines).
+
+## Contribution
+dfetch is open to new contributors, especially for bug fixing or implementation of new features. Do not hesitate to open an issue/pull request :)
+  
+## License
+  <a href="https://opensource.org/licenses/MIT">MIT</a>
+  
+  Copyright (c) 2021-present, Tristan Bilot
