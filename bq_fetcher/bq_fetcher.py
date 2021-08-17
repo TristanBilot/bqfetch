@@ -14,6 +14,7 @@ CREDS_SCOPES = [
     "https://www.googleapis.com/auth/bigquery",
     "https://www.googleapis.com/auth/devstorage.full_control"
 ]
+PREFERED_CHUNK_SIZE_IN_GB = 3
 
 class BigQueryTable:
     '''
@@ -239,6 +240,8 @@ class BigQueryFetcher:
         self,
         chunk: FetchingChunk=None,
         nb_cores: int=1,
+        prefered_chunk_size_in_GB: int=PREFERED_CHUNK_SIZE_IN_GB,
+        memory_to_save: int = 1,
         parallel_backend: str='billiard',
         partitioned_table_name: str='TMP_TABLE',
     ) -> pd.DataFrame:
@@ -256,6 +259,11 @@ class BigQueryFetcher:
             to a value larger than the number of vCPUs on the machine.
             Setting this parameter to `-1` will use the number of vCPUs on
             the machine.
+        prefered_chunk_size_in_GB: int
+            The size in GB of the chunks that will be fetched on each process.
+            Sometimes, when this value is too high, serializations error can occur.
+        memory_to_save: int
+            The amount of memory in GB to not use on the machine to avoid overflows.
         parallel_backend: str
             The framework used to parallelize the fetching.
             >>> Choose 'billiard' to use an old fork of the Python multiprocessing lib
@@ -290,7 +298,8 @@ class BigQueryFetcher:
         if nb_cores > vcpu_count:
             print(f'Warning: `nb_cores` ({nb_cores}) greater than cpus on machine ({vcpu_count})')
 
-        optimized_chunks = self._divide_chunk_from_memory(chunk)
+        optimized_chunks = self._divide_chunk_from_memory(chunk, nb_cores, prefered_chunk_size_in_GB, \
+            memory_to_save)
         if nb_cores == 1:
             partitioned_table_name = f'{partitioned_table_name}0'
             self._client.create_partitioned_table(self._bq_table, chunk, partitioned_table_name)
@@ -329,7 +338,9 @@ class BigQueryFetcher:
     def get_chunk_size_approximation(
         self,
         column: str,
+        nb_cores: int=1,
         nb_GB_to_save: int = 1,
+        prefered_chunk_size_in_GB: int = PREFERED_CHUNK_SIZE_IN_GB,
     ) -> int:
         '''
         Tries to give an estimation for the chunk size to used in order to divide the table.
@@ -359,39 +370,54 @@ class BigQueryFetcher:
             for count in nb_occurences)
         dispersion_quotient = nb_dispersed_values / len(nb_occurences)
 
-        if dispersion_quotient > 0.25:
+        if dispersion_quotient > coeff:
             raise InvalidChunkRangeException(f'''Difference of range between elements of column {column} \
                 is too high: more than {coeff * 100}% of elements are too far from the mean.''')
 
-        chunk_size, size_of_table_in_GB = self._chunk_size_approximation_formula(nb_GB_to_save)
+        chunk_size, size_of_table_in_GB = self._chunk_size_approximation_formula(nb_GB_to_save, \
+            nb_cores, prefered_chunk_size_in_GB)
         self._cache['size_per_chunk_in_GB'] = math.ceil(size_of_table_in_GB / chunk_size)
         return chunk_size
 
     def _divide_chunk_from_memory(
         self,
         chunk: FetchingChunk,
-        nb_GB_to_save: int = 1,
+        nb_cores: int,
+        prefered_chunk_size_in_GB: int,
+        nb_GB_to_save: int,
     ) -> Iterable:
+        '''
+        Divides a chunk that fit in memory into smaller chunks in order
+        to perform them faster when using multiprocessing.
+        `nb_GB_to_save`: number of GB to not use on the machine.
+        `prefered_chunk_size_in_GB`: the size for which the chunk will be divised.
+        Ex: for a chunk of size 10GB, and a `prefered_chunk_size_in_GB` of 2
+        >>> 5 chunks of size 2GB
+        '''
         if 'size_per_chunk_in_GB' not in self._cache:
-            chunk_size, size_of_table_in_GB = self._chunk_size_approximation_formula(nb_GB_to_save)
+            chunk_size, size_of_table_in_GB = self._chunk_size_approximation_formula(nb_GB_to_save, \
+                nb_cores, prefered_chunk_size_in_GB)
             self._cache['size_per_chunk_in_GB'] = math.ceil(size_of_table_in_GB / chunk_size)
 
         free_size = min(self._cache['size_per_chunk_in_GB'], (psutil.virtual_memory()[1] - nb_GB_to_save) / 1024**3)
-        best_performance_table_size_in_GB = 2
-        nb_chunks = math.ceil(free_size / best_performance_table_size_in_GB)
+        nb_chunks = math.ceil(free_size / prefered_chunk_size_in_GB)
         return divide_in_chunks(chunk.elements, nb_chunks)
-
+    
     def _chunk_size_approximation_formula(
         self,
         nb_GB_to_save: int,
+        nb_cores: int,
+        prefered_chunk_size_in_GB: int,
     ):
         '''
         Returns an estimated chunk_size in the case the number of occurences are correctly 
-        dispersed. Returns also the size of the table for cache and performance reasons.
+        dispersed. Tis estimation is based on the free memory and the number of vCPUs.
+        Returns also the size of the table for cache and performance reasons.
         '''
         size_of_table_in_GB = self._client.get_table_size_in_GB(self._bq_table)
         free_memory_in_GB = (psutil.virtual_memory()[1] - nb_GB_to_save) / 1024**3
-        chunk_size = math.ceil(size_of_table_in_GB / free_memory_in_GB)
+        sum_of_GB_for_cores = prefered_chunk_size_in_GB * nb_cores
+        chunk_size = math.ceil(size_of_table_in_GB / min(sum_of_GB_for_cores, free_memory_in_GB))
         return chunk_size, size_of_table_in_GB
         
 
