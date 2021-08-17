@@ -1,4 +1,4 @@
-from dfetch.dfetch import BigQueryFetcher, BigQueryTable, FetchingChunk
+from bqfetch.bqfetch import BigQueryFetcher, BigQueryTable, FetchingChunk
 import unittest
 
 bq_table_mock = BigQueryTable(
