@@ -1,12 +1,12 @@
 <p align="center"><img width="15%" src=".github/logo.svg"/></p>
 
 <p align="center">
-  <a href=""><img src="https://img.shields.io/github/last-commit/tristanbilot/dfetch" alt="Last commit"></a>
-  <a href="https://img.shields.io/github/languages/count/tristanbilot/dfetch"><img src="https://img.shields.io/github/languages/count/tristanbilot/dfetch" alt="Languages"></a>
-  <a href=""><img src="https://img.shields.io/github/release-date/tristanbilot/dfetch" alt="Release date"></a>
+  <a href=""><img src="https://img.shields.io/github/last-commit/tristanbilot/bqfetch" alt="Last commit"></a>
+  <a href="https://img.shields.io/github/languages/count/tristanbilot/bqfetch"><img src="https://img.shields.io/github/languages/count/tristanbilot/bqfetch" alt="Languages"></a>
+  <a href=""><img src="https://img.shields.io/github/release-date/tristanbilot/bqfetch" alt="Release date"></a>
   <br>
   <a href=""><img src="https://img.shields.io/badge/Python-%3E%3D3.6-blue" alt="Python version"></a>
-  <a href=""><img src="https://img.shields.io/github/license/tristanbilot/dfetch" alt="Python version"></a>
+  <a href=""><img src="https://img.shields.io/github/license/tristanbilot/bqfetch" alt="Python version"></a>
 </p>
 
 # <p align="center">bqfetch<p>
