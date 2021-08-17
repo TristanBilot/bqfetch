@@ -1,3 +1,19 @@
+Metadata-Version: 2.1
+Name: bqfetch
+Version: 0.0.1
+Summary: A tool to fetch BigQuery tables to pandas DataFrames fast.
+Home-page: https://github.com/TristanBilot/bqfetch
+Author: Tristan Bilot
+Author-email: bilot.tristan@hotmail.fr
+License: UNKNOWN
+Platform: UNKNOWN
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.6
+Description-Content-Type: text/markdown
+License-File: LICENSE
+
 <p align="center"><img width="15%" src="https://raw.githubusercontent.com/TristanBilot/bqfetch/master/.github/logo.svg"/></p>
 
 <p align="center">
@@ -104,7 +120,6 @@ This column contains distinct values so can be divided in chunks easily.
   
 ### A bad index colum:
 This column can contains a lot of variance between values so the chunking will not be reliable.
-
 |  Age |
 |:---:|
 |  |
@@ -124,3 +139,5 @@ bqfetch is open to new contributors, especially for bug fixing or implementation
   <a href="https://opensource.org/licenses/MIT">MIT</a>
   
   Copyright (c) 2021-present, Tristan Bilot
+
+

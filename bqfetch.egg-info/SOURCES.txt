@@ -1,0 +1,11 @@
+LICENSE
+README.md
+pyproject.toml
+setup.cfg
+bqfetch/__init__.py
+bqfetch/bqfetch.py
+bqfetch/utils.py
+bqfetch.egg-info/PKG-INFO
+bqfetch.egg-info/SOURCES.txt
+bqfetch.egg-info/dependency_links.txt
+bqfetch.egg-info/top_level.txt
