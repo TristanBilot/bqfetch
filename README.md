@@ -10,8 +10,15 @@
 </p>
 
 # <p align="center">bqfetch<p>
-##### A lightweight tool to fetch tables from BigQuery as pandas DataFrames very fast using BigQuery Storage API combined with multiprocessing.
+**A lightweight tool to fetch tables from BigQuery as pandas DataFrames very fast using BigQuery Storage API combined with multiprocessing.**
 
+
+## Installation
+```
+pip install bqfetch
+pip install -r requirements.txt
+```
+  
 ## Algorithm
   * Fetch all distinct values from the given index `column`.
   * Divide these indices in `chunks` based on the available memory and the number of cores on the machine.
