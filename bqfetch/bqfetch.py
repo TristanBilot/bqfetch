@@ -15,7 +15,7 @@ CREDS_SCOPES = [
     "https://www.googleapis.com/auth/bigquery",
     "https://www.googleapis.com/auth/devstorage.full_control"
 ]
-PREFERED_CHUNK_SIZE_IN_GB = 3
+DEFAULT_CHUNK_SIZE_PER_CORE_IN_GB = 2
 
 class BigQueryTable:
     '''
@@ -55,19 +55,24 @@ class BigQueryClient:
 
     Parameters:
     ----------
-    service_account_filename: str
+    service_account_path: str
         The path and file name of credentials file bq_service_account.json.
         The path should be absolute.
     '''
     def __init__(
         self,
-        service_account_filename: str,
+        service_account_path: str,
+        creds_scope: str=None,
     ) -> None:
-        assert isinstance(service_account_filename, str)
+        if isinstance(service_account_path, str):
+            creds_scope = creds_scope if creds_scope is not None \
+                else CREDS_SCOPES
+            credentials = service_account.Credentials.from_service_account_file(
+                service_account_path, scopes=creds_scope
+            )
+        else:
+            raise ValueError('`service_account_path` should be of type str or Credentials')
 
-        credentials = service_account.Credentials.from_service_account_file(
-            service_account_filename, scopes=CREDS_SCOPES
-        )
         bq_client = bigquery.Client(
             credentials=credentials,
             project=credentials.project_id
@@ -191,7 +196,7 @@ class BigQueryFetcher:
     '''
     An object used to fetch BigQuery tables easily and progressively
     in order to handle huge tables that does not fit into memory.
-    The fetcher divides the table in chunks of size `chunk_size`
+    The fetcher divides the table in chunks of size `chunk_size_in_GB`
     based on the `column` parameter. Then each chunk is fetched 
     using BigQuery Storage API, sequencially or in parallel using
     child processes running on multiple cores.
@@ -213,9 +218,10 @@ class BigQueryFetcher:
         service_account_filename: str,
         bq_table: BigQueryTable,
         existing_client: BigQueryClient=None,
+        creds_scope: str=None,
     ):
         self._client = existing_client if existing_client is not None \
-            else BigQueryClient(service_account_filename)
+            else BigQueryClient(service_account_filename, creds_scope=creds_scope)
         self._bq_table = bq_table
         self._service_account_filename = service_account_filename
         self._creds_scopes = CREDS_SCOPES
@@ -225,22 +231,35 @@ class BigQueryFetcher:
     def chunks(
         self,
         column: str,
-        nb_chunks: int,
+        by_nb_chunks: int=None,
+        by_chunk_size_in_GB: int=None,
         verbose: bool=False,
     ) -> Iterator:
         '''
         Returns a list on which iterate to get `nb_chunks` chunks of `column` items.
         It allows to fetch the whole table with multiple chunks that can handle in memory.
+        The chosen column can be of any type, not only String or Int.
         '''
+        assert isinstance(column, str)
+        
+        if (by_nb_chunks is None and by_chunk_size_in_GB is None) \
+            or (by_nb_chunks is not None and by_chunk_size_in_GB is not None):
+            raise ValueError('Only one parameter `by_nb_chunks` or `by_chunk_size_in_GB` has to be set')
+        if not ((by_nb_chunks is not None and by_nb_chunks > 0) \
+            or (by_chunk_size_in_GB is not None and by_chunk_size_in_GB > 0)):
+            raise ValueError('Value has to be greater than 0')
+
+        by_nb_chunks = by_nb_chunks if by_nb_chunks is not None else \
+            self.get_nb_chunks_approximation(column, verbose=verbose, chunk_size_in_GB=by_chunk_size_in_GB)
+
         indexes = self._client.get_column_values(self._bq_table, column)
-        chunks = divide_in_chunks(indexes, nb_chunks)
+        chunks = divide_in_chunks(indexes, by_nb_chunks)
         chunks = [FetchingChunk(x[column].tolist(), column) for x in chunks]
 
         if verbose:
             log(
                 'Chunking',
                 f'Nb values in "{column}":\t {len(indexes)}',
-                f'Chunk size:\t\t\t {ft(nb_chunks)}',
                 f'Nb chunks:\t\t\t {len(chunks)}')
         return chunks
 
@@ -248,8 +267,7 @@ class BigQueryFetcher:
         self,
         chunk: FetchingChunk=None,
         nb_cores: int=1,
-        prefered_chunk_size_in_GB: int=PREFERED_CHUNK_SIZE_IN_GB,
-        memory_to_save: int = 1,
+        memory_to_save: float = 1.0,
         parallel_backend: str='billiard',
         partitioned_table_name: str='TMP_TABLE',
         verbose: bool=False,
@@ -268,10 +286,7 @@ class BigQueryFetcher:
             to a value larger than the number of vCPUs on the machine.
             Setting this parameter to `-1` will use the number of vCPUs on
             the machine.
-        prefered_chunk_size_in_GB: int
-            The size in GB of the chunks that will be fetched on each process.
-            Sometimes, when this value is too high, serializations error can occur.
-        memory_to_save: int
+        memory_to_save: float
             The amount of memory in GB to not use on the machine to avoid overflows.
         parallel_backend: str
             The framework used to parallelize the fetching.
@@ -296,12 +311,7 @@ class BigQueryFetcher:
         assert nb_cores == -1 or nb_cores > 0
         assert isinstance(chunk, FetchingChunk)
         assert parallel_backend in ['billiard', 'joblib', 'multiprocessing']
-
-        column = chunk.column
-        if column is not None:
-            assert chunk is not None
-        if chunk is not None:
-            assert column is not None
+        assert memory_to_save > 0
 
         vcpu_count = os.cpu_count()
         if nb_cores > vcpu_count:
@@ -319,10 +329,8 @@ class BigQueryFetcher:
 
         start = time()
         df = None
-        available_memory_in_GB = (psutil.virtual_memory()[1] - memory_to_save) / 1024**3
-        optimized_chunks = self._divide_chunk_for_parallel(chunk, nb_cores, prefered_chunk_size_in_GB, \
-            available_memory_in_GB)
-
+        column = chunk.column
+        
         if nb_cores == 1:
             partitioned_table_name = f'{partitioned_table_name}0'
             self._client.create_partitioned_table(self._bq_table, chunk, partitioned_table_name)
@@ -332,12 +340,13 @@ class BigQueryFetcher:
             )
             self._client.delete_partitioned_table(self._bq_table, partitioned_table_name)
         else:
-            for i, small_chunk in enumerate(optimized_chunks):
+            chunks_per_core = divide_in_chunks(chunk.elements, nb_cores)
+            for i, small_chunk in enumerate(chunks_per_core):
                 small_chunk = FetchingChunk(small_chunk, chunk.column)
                 self._client.create_partitioned_table(self._bq_table, small_chunk, f'{partitioned_table_name}{i}')
 
             partition_list = [(self._service_account_filename, self._creds_scopes, \
-                f'{partitioned_table_name}{i}', self._bq_table, column, item) for i, item in enumerate(optimized_chunks)]
+                f'{partitioned_table_name}{i}', self._bq_table, column, item) for i, item in enumerate(chunks_per_core)]
             
             parallel_backends = {
                 'billiard': do_parallel_billiard,
@@ -347,10 +356,10 @@ class BigQueryFetcher:
             parallel_function = parallel_backends[parallel_backend]
             df = pd.concat(parallel_function(
                 _fetch_in_parallel,
-                len(optimized_chunks),
+                len(chunks_per_core),
                 partition_list
             ))
-            for i in range(len(optimized_chunks)):
+            for i in range(len(chunks_per_core)):
                 self._client.delete_partitioned_table(self._bq_table, f'{partitioned_table_name}{i}')
         end = time() - start
 
@@ -361,12 +370,12 @@ class BigQueryFetcher:
                 f'Size of dataframe:\t\t {ft(df.memory_usage(deep=True).sum() / 1024**3)}')
         return df
 
-    def get_chunk_size_approximation(
+    def get_nb_chunks_approximation(
         self,
         column: str,
         nb_cores: int=1,
         nb_GB_to_save: int = 1,
-        prefered_chunk_size_in_GB: int = PREFERED_CHUNK_SIZE_IN_GB,
+        chunk_size_in_GB: int = DEFAULT_CHUNK_SIZE_PER_CORE_IN_GB,
         verbose: bool=False,
     ) -> int:
         '''
@@ -384,11 +393,18 @@ class BigQueryFetcher:
         ----------
         column: str
             The column name of the table on which do the approximation.
+        nb_cores: int
+            The number of cores that will be used.
+        nb_GB_to_save: int
+            The amount of memory in GB to not use on the machine.
+        chunk_size_in_GB: int
+            The amount of memory of one chunk, this amount should fit in memory and thus be less
+            than the free memory available on the machine.
 
         Returns:
         -------
-        chunk_size: int
-            The size of one chunk, used later to fetch the table.
+        nb_chunks: int
+            The approximated number of chunks based on free space and size of table.
         '''
         nb_occurences = self._client.get_nb_occurences_for_column(self._bq_table, column)
         mean = sum(nb_occurences) / len(nb_occurences)
@@ -402,65 +418,39 @@ class BigQueryFetcher:
                 is too high: more than {coeff * 100}% of elements are too far from the mean.''')
 
         available_memory_in_GB = (psutil.virtual_memory()[1] - nb_GB_to_save) / 1024**3
-        chunk_size, size_of_table_in_GB = self._chunk_size_approximation_formula(nb_cores, prefered_chunk_size_in_GB, \
+        if chunk_size_in_GB >= available_memory_in_GB:
+            print(f'WARNING: you are using a chunk size bigger than the available memory ({ft(chunk_size_in_GB)}>{ft(available_memory_in_GB)})')
+        nb_chunks, size_of_table_in_GB = self._nb_chunks_approximation_formula(nb_cores, chunk_size_in_GB, \
             available_memory_in_GB)
-        self._cache['size_per_chunk_in_GB'] = math.ceil(size_of_table_in_GB / chunk_size)
+        size_per_chunk_in_GB = math.ceil(size_of_table_in_GB / nb_chunks)
 
         if verbose:
             log(
                 'Chunk size approximation',
                 f'Available memory on device:\t {ft(available_memory_in_GB)}',
                 f'Size of table:\t\t {ft(size_of_table_in_GB)}',
-                f'Prefered size of chunk:\t {ft(PREFERED_CHUNK_SIZE_IN_GB)}',
-                f'Size per chunk:\t\t {ft(self._cache["size_per_chunk_in_GB"])}',
-                f'Chunk size approximation:\t {chunk_size}')
-        return chunk_size
+                f'Prefered size of chunk:\t {ft(chunk_size_in_GB)}',
+                f'Size per chunk:\t\t {ft(size_per_chunk_in_GB)}',
+                f'Nb chunks approximation:\t {nb_chunks}')
+        return nb_chunks
 
-    def _divide_chunk_for_parallel(
-        self,
-        chunk: FetchingChunk,
-        nb_cores: int,
-        prefered_chunk_size_in_GB: int,
-        available_memory_in_GB: int,
-    ) -> Iterable:
-        '''
-        Divides a chunk that fit in memory into smaller chunks in order
-        to compute them faster when using multiprocessing.
-        `nb_GB_to_save`: number of GB to not use on the machine.
-        We have to estimate both the chunk and table in GB in order to divide properly.
-        `prefered_chunk_size_in_GB`: the size for which the chunk will be divised.
-        Ex: for a chunk of size 10GB, and a `prefered_chunk_size_in_GB` of 2
-        >>> 5 chunks of size 2GB
-        '''
-        if 'size_per_chunk_in_GB' not in self._cache:
-
-            # if the size per chunk is not already computed, we have to do it in order
-            # to make the calculus
-            chunk_size, size_of_table_in_GB = self._chunk_size_approximation_formula( \
-                nb_cores, prefered_chunk_size_in_GB, available_memory_in_GB)
-            self._cache['size_per_chunk_in_GB'] = math.ceil(size_of_table_in_GB / chunk_size)
-
-        # choose either the full chunk if it fits in memory, or the available space if
-        # the chunk is too big
-        free_size = min(self._cache['size_per_chunk_in_GB'], available_memory_in_GB)
-        nb_chunks = math.ceil(free_size / prefered_chunk_size_in_GB)
-        return divide_in_chunks(chunk.elements, nb_chunks)
-    
-    def _chunk_size_approximation_formula(
+    def _nb_chunks_approximation_formula(
         self,
         nb_cores: int,
         prefered_chunk_size_in_GB: int,
         available_memory_in_GB: int,
     ):
         '''
-        Returns an estimated chunk_size in the case the number of occurences are correctly 
-        dispersed. This estimation is based on the free memory and the number of cores.
+        Returns an estimated number of chunks to divide the whole table.
+        This estimation is based on the free memory and the number of cores.
         Returns also the size of the table for cache and performance reasons.
         '''
-        size_of_table_in_GB = self._client.get_table_size_in_GB(self._bq_table)
+        if not 'size_of_table_in_GB' in self._cache:
+            size_of_table_in_GB = self._client.get_table_size_in_GB(self._bq_table)
+            self._cache['size_of_table_in_GB'] = size_of_table_in_GB
         sum_of_GB_for_cores = prefered_chunk_size_in_GB * nb_cores
-        chunk_size = math.ceil(size_of_table_in_GB / min(sum_of_GB_for_cores, available_memory_in_GB))
-        return chunk_size, size_of_table_in_GB
+        nb_chunks = math.ceil(self._cache['size_of_table_in_GB'] / min(sum_of_GB_for_cores, available_memory_in_GB))
+        return nb_chunks, self._cache['size_of_table_in_GB']
         
 
 def _fetch_in_parallel(

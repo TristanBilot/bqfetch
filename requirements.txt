@@ -1,0 +1,7 @@
+psutil==5.8.0
+pandas
+google-cloud-bigquery-storage>=2.1.0
+google-cloud-bigquery>=2.1.0
+billiard>=3.6.4.0
+joblib>=1.0.1
+pyarrow>=1.0.1

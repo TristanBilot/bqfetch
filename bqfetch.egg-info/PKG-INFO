@@ -1,7 +1,7 @@
 Metadata-Version: 2.1
 Name: bqfetch
-Version: 0.0.1
-Summary: A tool to fetch BigQuery tables to pandas DataFrames fast.
+Version: 1.0.1
+Summary: A tool to fetch tables from BigQuery as pandas DataFrames, fast.
 Home-page: https://github.com/TristanBilot/bqfetch
 Author: Tristan Bilot
 Author-email: bilot.tristan@hotmail.fr
@@ -120,6 +120,7 @@ This column contains distinct values so can be divided in chunks easily.
   
 ### A bad index colum:
 This column can contains a lot of variance between values so the chunking will not be reliable.
+
 |  Age |
 |:---:|
 |  |

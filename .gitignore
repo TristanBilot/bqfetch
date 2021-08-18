@@ -1,2 +1,6 @@
 __pycache__
 secrets
+bqfetch.egg-info
+dist
+pyproject.toml
+setup.cfg
