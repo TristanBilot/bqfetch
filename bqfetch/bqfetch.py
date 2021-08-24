@@ -1,10 +1,8 @@
 from time import time
 import os
-from google.cloud.bigquery_storage_v1.reader import ReadRowsIterable
-from pandas.core.frame import DataFrame
 import psutil
 import math
-from typing import Iterator, List, Tuple, Union
+from typing import Iterator, List, Tuple
 
 import pandas as pd
 from google.cloud import bigquery
@@ -269,12 +267,11 @@ class BigQueryFetcher:
         self,
         chunk: FetchingChunk=None,
         nb_cores: int=1,
-        as_pandas_df: bool=True,
         memory_to_save: float = 1.0,
         parallel_backend: str='billiard',
         partitioned_table_name: str='TMP_TABLE',
         verbose: bool=False,
-    ) -> Union[pd.DataFrame, ReadRowsIterable]:
+    ) -> pd.DataFrame:
         '''
         Fetch a `chunk` using BigQuery Storage API as a pandas Dataframe.
         The `chunk` can be given using the `chunks()` method.
@@ -289,10 +286,6 @@ class BigQueryFetcher:
             to a value larger than the number of vCPUs on the machine.
             Setting this parameter to `-1` will use the number of vCPUs on
             the machine.
-        as_pandas_df: bool
-            If True, returns the table as a pandas dataframe.
-            If False, returns the table as a ReadRowsIterable: an iterable on each row
-            as dictionaries.
         memory_to_save: float
             The amount of memory in GB to not use on the machine to avoid overflows.
         parallel_backend: str
@@ -343,7 +336,7 @@ class BigQueryFetcher:
             self._client.create_partitioned_table(self._bq_table, chunk, partitioned_table_name)
             df = _fetch_in_parallel(
                 (self._service_account_filename, self._creds_scopes, \
-                    partitioned_table_name, self._bq_table, column, chunk.elements, as_pandas_df)
+                    partitioned_table_name, self._bq_table, column, chunk.elements)
             )
             self._client.delete_partitioned_table(self._bq_table, partitioned_table_name)
         else:
@@ -353,7 +346,7 @@ class BigQueryFetcher:
                 self._client.create_partitioned_table(self._bq_table, small_chunk, f'{partitioned_table_name}{i}')
 
             partition_list = [(self._service_account_filename, self._creds_scopes, \
-                f'{partitioned_table_name}{i}', self._bq_table, column, item, as_pandas_df) for i, item in enumerate(chunks_per_core)]
+                f'{partitioned_table_name}{i}', self._bq_table, column, item) for i, item in enumerate(chunks_per_core)]
             
             parallel_backends = {
                 'billiard': do_parallel_billiard,
@@ -371,11 +364,10 @@ class BigQueryFetcher:
         end = time() - start
 
         if verbose:
-            msg = [f'Time to fetch:\t\t {round(end, 2)}s']
-            if isinstance(df, pd.DataFrame):
-                msg += [f'Nb lines in dataframe:\t {len(df)}',
-                    f'Size of dataframe:\t\t {ft(df.memory_usage(deep=True).sum() / 1024**3)}']
-            log(*msg)
+            log(
+                f'Time to fetch:\t\t {round(end, 2)}s',
+                f'Nb lines in dataframe:\t {len(df)}',
+                f'Size of dataframe:\t\t {ft(df.memory_usage(deep=True).sum() / 1024**3)}')
         return df
 
     def get_nb_chunks_approximation(
@@ -463,7 +455,7 @@ class BigQueryFetcher:
 
 def _fetch_in_parallel(
     pickled_parameters: Tuple,
-) -> Union[pd.DataFrame, ReadRowsIterable]:
+) -> pd.DataFrame:
     '''
     Fetch a BigQuery table using Storage API.
     If `chunk` is given, the fetching will return only
@@ -475,8 +467,7 @@ def _fetch_in_parallel(
     '''
     from google.cloud.bigquery_storage import BigQueryReadClient, ReadSession, DataFormat
 
-    service_account_filename, creds_scopes, partitioned_table_name, bq_table, column, chunk, \
-        as_pandas_df = pickled_parameters
+    service_account_filename, creds_scopes, partitioned_table_name, bq_table, column, chunk = pickled_parameters
 
     credentials = service_account.Credentials.from_service_account_file(
         service_account_filename, scopes=creds_scopes
@@ -507,4 +498,4 @@ def _fetch_in_parallel(
         max_stream_count=1,
     )
     reader = bqstorageclient.read_rows(session.streams[0].name, timeout=10000)
-    return reader.to_dataframe(session) if as_pandas_df else reader.rows(session)
+    return reader.to_dataframe(session)
