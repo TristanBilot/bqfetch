@@ -10,7 +10,7 @@
 </p>
 
 # <p align="center">bqfetch<p>
-**A lightweight tool to fetch tables from BigQuery as pandas DataFrames very fast using BigQuery Storage API combined with multiprocessing.**
+**A lightweight tool to fetch tables from BigQuery very fast using BigQuery Storage API combined with multiprocessing. Also supports fetching as pandas DataFrame**
 
 
 ## Installation
@@ -67,6 +67,16 @@ In some cases, choosing the good `chunk_size` can be difficult, so a function is
 >>> fetcher = BigQueryFetcher('/path/to/service_account.json', table)
 >>> perfect_nb_chunks = fetcher.get_chunk_size_approximation('id')
 >>> chunks = fetcher.chunks('id', perfect_nb_chunks)
+```
+
+## Fetch table without pandas DataFrame
+For those not intersted by fetching the table as a pandas DataFrame, set `as_pandas_df` to False the fetch() method will return an iterator on each row of the table as a Python dictionnary.
+
+```python
+for chunk in chunks:
+  rows = fetcher.fetch(chunk=chunk, nb_cores=1, as_pandas_df=False)
+  for row in rows:
+      print(row)
 ```
 
 ## Verbose mode
