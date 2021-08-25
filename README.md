@@ -41,10 +41,9 @@ pip install -r requirements.txt
 | ... |   ...   | ... |
 
 ```python
->>> table = BigQueryTable("my_project", "dataset1", "users_table")
+>>> table = BigQueryTable("PROJECT", "DATASET", "TABLE")
 >>> fetcher = BigQueryFetcher('/path/to/service_account.json', table)
->>> nb_chunks = 10
->>> chunks = fetcher.chunks('id', nb_chunks)
+>>> chunks = fetcher.chunks('id', by_chunk_size_in_GB=5)
 
 >>> for chunk in chunks:
         df = fetcher.fetch(chunk, nb_cores=-1, parallel_backend='billiard')
@@ -53,35 +52,36 @@ pip install -r requirements.txt
   
 * First, we have to create a `BigQueryTable` object which contains the path to the BigQuery table stored in GCP.
 * A fetcher is created, given in parameter the absolute path to the service_account.json file, the file is mandatory in order to do operations in GCP.
-* Define the number of chunks to divide the table. Ex: if `nb_chunks` is set to 10, then the whole values in the index column will be fetched and divised in 10. However, setting `nb_chunks` to 10 does not mean that the table will necessarly be divided equally in 10 parts because some values in the index column can appear more than other and vice versa, causing that a value containing multiple row will be considered the same as a value containing only one row in the table.
-* Chunk the whole table, given the `column` name and the chunk size. In this case, choosing the **id** column is perfect because this each value of this column appears the same number of times: 1 time.
+* Chunks the whole table, given the `column` name and the chunk size. In this case, choosing the **id** column is perfect because this each value of this column appears the same number of times: 1 time. Concerning the chunks size, if by_chunk_size_in_GB=5, each chunk that will be fetched on the machine will be of size 5GB. Thus it has to fit into memory. You need to save 1/3 more memory because the size of a DataFrame object is larger than the raw fetched data.
 * For each chunk, fetch it.
     * `nb_cores`=-1 will use the number of cores available on the machine.
     * `parallel_backend`='billiard' | 'joblib' | 'multiprocessing' specify the backend framework to use.
 
-## Chunk size approximation function
-In some cases, choosing the good `chunk_size` can be difficult, so a function is available to approximate the perfect size to chunk the table. However, this function will throw if there is too much variance between the number of values in the index column (if more than 25% of the values appear more or less than 25% of the mean of the appearance of all the values in the column).
+## Fetch by number of chunks
+It is also possible to use `by_nb_chunks` instead of `by_chunk_size_in_GB`. It will divided the table in N, so you cannot control more flexibly the size of each chunk.
   
 ```python
->>> table = BigQueryTable("my_project", "dataset1", "users_table")
+>>> table = BigQueryTable("PROJECT", "DATASET", "TABLE")
 >>> fetcher = BigQueryFetcher('/path/to/service_account.json', table)
->>> perfect_nb_chunks = fetcher.get_chunk_size_approximation('id')
->>> chunks = fetcher.chunks('id', perfect_nb_chunks)
+>>> chunks = fetcher.chunks('id', by_nb_chunks=10)
+
+>>> for chunk in chunks:
+        df = fetcher.fetch(chunk, nb_cores=-1, parallel_backend='billiard')
+        # ...
 ```
 
 ## Verbose mode
 
 ```python
->>> perfect_nb_chunks = fetcher.get_chunk_size_approximation('barcode', verbose=True)
+>>> chunks = fetcher.chunks(column='id', by_nb_chunks=1, verbose=True)
 # Available memory on device:  7.04GB
 # Size of table:               2.19GB
 # Prefered size of chunk:      3GB
 # Size per chunk:              3GB
-# Chunk size approximation:    1
-
->>> chunks = fetcher.chunks(column='id', chunk_size=perfect_nb_chunks, verbose=True)
+# Nb chunks:                   1
+  
 # Nb values in "id":           96
-# Chunk size:                  1GB
+# Chunk size:                  3GB
 # Nb chunks:                   1
   
 >>> for chunk in chunks:
@@ -90,7 +90,7 @@ In some cases, choosing the good `chunk_size` can be difficult, so a function is
 # Nb cores:                    1
 # Parallel backend:            joblib
 
-# Time to fetch:               102.21s
+# Time to fetch:               43.21s
 # Nb lines in dataframe:       3375875
 # Size of dataframe:           2.83GB
 ```
