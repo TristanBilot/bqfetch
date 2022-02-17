@@ -4,13 +4,13 @@ from bqfetch.bqfetch import BigQueryFetcher, BigQueryTable
 
 if __name__ == '__main__':
     table = BigQueryTable(
-        "vg1np-apps-priceelas-dev01-52",
-        "TRISTAN_EXPLO",
-        "2GB"
+        "PROJECT",
+        "DATASET",
+        "TABLE"
     )
     fetcher = BigQueryFetcher(table)
     chunks = fetcher.chunks(
-        column='barcode',
+        column='id',
         by_chunk_size_in_GB=15,
         verbose=True
     )
