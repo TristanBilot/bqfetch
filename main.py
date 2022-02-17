@@ -8,10 +8,7 @@ if __name__ == '__main__':
         "TRISTAN_EXPLO",
         "2GB"
     )
-    fetcher = BigQueryFetcher(
-        '/Users/tristanbilot/Desktop/bigquery-fast-fetcher/secrets/bq_service_account.json',
-        table
-    )
+    fetcher = BigQueryFetcher(table)
     chunks = fetcher.chunks(
         column='barcode',
         by_chunk_size_in_GB=15,

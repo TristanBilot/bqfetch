@@ -61,7 +61,7 @@ class BigQueryClient:
     '''
     def __init__(
         self,
-        service_account_path: str,
+        service_account_path: str=None,
         creds_scope: str=None,
     ) -> None:
         if isinstance(service_account_path, str):
@@ -70,13 +70,16 @@ class BigQueryClient:
             credentials = service_account.Credentials.from_service_account_file(
                 service_account_path, scopes=creds_scope
             )
+            bq_client = bigquery.Client(
+                credentials=credentials,
+                project=credentials.project_id
+            )
+        elif service_account_path is None:
+            bq_client = bigquery.Client()
         else:
-            raise ValueError('`service_account_path` should be of type str or Credentials')
+            raise ValueError('`service_account_path` should be of type str or None')
 
-        bq_client = bigquery.Client(
-            credentials=credentials,
-            project=credentials.project_id
-        )
+        
         self._client = bq_client
 
     def run(
@@ -189,8 +192,6 @@ class BigQueryClient:
         table = f'{var["PROJECT_ID"]}.{var["DATASET"]}.{partitioned_table_name}'
         self.delete_table(table)
 
-class InvalidChunkRangeException(Exception):
-    pass
 
 class BigQueryFetcher:
     '''
@@ -215,8 +216,8 @@ class BigQueryFetcher:
     '''
     def __init__(
         self, 
-        service_account_filename: str,
         bq_table: BigQueryTable,
+        service_account_filename: str=None,
         existing_client: BigQueryClient=None,
         creds_scope: str=None,
     ):
@@ -414,8 +415,8 @@ class BigQueryFetcher:
         dispersion_quotient = nb_dispersed_values / len(nb_occurences)
 
         if dispersion_quotient > coeff:
-            raise InvalidChunkRangeException(f'''Difference of range between elements of column {column} \
-                is too high: more than {coeff * 100}% of elements are too far from the mean.''')
+            print(f'''Warning: Difference of range between elements of column {column} \
+                is too high: {(dispersion_quotient * 100):.2f}%, more than {coeff * 100}% of elements are too far from the mean.''')
 
         available_memory_in_GB = (psutil.virtual_memory()[1] - nb_GB_to_save) / 1024**3
         if chunk_size_in_GB >= available_memory_in_GB:
@@ -470,8 +471,8 @@ def _fetch_in_parallel(
     service_account_filename, creds_scopes, partitioned_table_name, bq_table, column, chunk = pickled_parameters
 
     credentials = service_account.Credentials.from_service_account_file(
-        service_account_filename, scopes=creds_scopes
-    )
+        service_account_filename, scopes=creds_scopes) \
+            if service_account_filename != None else None
     var = bq_table.variables
     bqstorageclient = BigQueryReadClient(credentials=credentials)
     stringify_table = f"projects/{var['PROJECT_ID']}/datasets/{var['DATASET']}/tables/{partitioned_table_name}"
