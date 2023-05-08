@@ -10,7 +10,7 @@
 </p>
 
 # <p align="center">bqfetch<p>
-**A lightweight tool to fetch tables from BigQuery as pandas DataFrames very fast using BigQuery Storage API combined with multiprocessing.**
+**A lightweight tool to fetch tables from BigQuery as pandas DataFrames very fast using BigQuery Storage API combined with multiprocessing. This module also aims to fetch large tables that cannot fit into memory, by chunking the table in a smart and scalable way.**
 
 
 ## Installation
